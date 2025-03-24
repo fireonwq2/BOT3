@@ -437,7 +437,76 @@ async def restart_server(interaction: discord.Interaction, container_name: str):
 def get_container_id_from_database(userid, container_name):
     if not os.path.exists(database_file):
         return None
-    with open(database_file, 'r') as f:
+    with open(database_file,async def create_server_task(interaction, ram="2g", cpu=2, ubuntu_version="22.04", password="root"):
+    await interaction.followup.send(embed=discord.Embed(
+        description=f"🛠️ **Creating VPS...**\n🔹 RAM: **{ram}**\n🔹 CPU: **{cpu} cores**\n🔹 OS: **Ubuntu {ubuntu_version}**", 
+        color=0x00ff00
+    ))
+
+    userid = str(interaction.user.id)
+    if count_user_servers(userid) >= SERVER_LIMIT:
+        await interaction.followup.send(embed=discord.Embed(
+            description="❌ **Error: Instance Limit Reached.**", 
+            color=0xff0000))
+        return
+
+    valid_ubuntu_versions = ["22.04", "20.04", "18.04"]
+    if ubuntu_version not in valid_ubuntu_versions:
+        await interaction.followup.send(embed=discord.Embed(
+            description="❌ **Invalid Ubuntu version. Choose from 22.04, 20.04, 18.04.**", 
+            color=0xff0000))
+        return
+
+    image = f"ubuntu:{ubuntu_version}"  # Select correct Ubuntu image
+
+    try:
+        container_id = subprocess.check_output([
+            "docker", "run", "-itd", "--privileged",
+            "--hostname", "nxh-i7", "--cap-add=ALL",
+            "--memory", ram, "--cpus", str(cpu),
+            image
+        ]).strip().decode('utf-8')
+
+        # Set root password inside container
+        subprocess.run(["docker", "exec", container_id, "bash", "-c", f"echo 'root:{password}' | chpasswd"], check=True)
+
+    except subprocess.CalledProcessError as e:
+        await interaction.followup.send(embed=discord.Embed(
+            description=f"❌ **Error creating Docker container:** {e}", 
+            color=0xff0000))
+        return
+
+    try:
+        exec_cmd = await asyncio.create_subprocess_exec("docker", "exec", container_id, "tmate", "-F",
+                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        await interaction.followup.send(embed=discord.Embed(
+            description=f"❌ **Error executing SSH session:** {e}", 
+            color=0xff0000))
+        subprocess.run(["docker", "kill", container_id])
+        subprocess.run(["docker", "rm", container_id])
+        return
+
+    ssh_session_line = await capture_ssh_session_line(exec_cmd)
+    if ssh_session_line:
+        await interaction.user.send(embed=discord.Embed(
+            description=f"✅ **VPS Created Successfully!**\n"
+                        f"🔹 **SSH Command:** ```{ssh_session_line}```\n"
+                        f"🔹 **Password:** `{password}`\n"
+                        f"🔹 **OS:** Ubuntu {ubuntu_version}\n"
+                        f"🔹 **RAM:** {ram}\n"
+                        f"🔹 **CPU:** {cpu} cores\n",
+            color=0x00ff00))
+        add_to_database(userid, container_id, ssh_session_line)
+        await interaction.followup.send(embed=discord.Embed(
+            description="✅ **Instance created successfully. Check your DMs for details.**", 
+            color=0x00ff00))
+    else:
+        await interaction.followup.send(embed=discord.Embed(
+            description="❌ **Error: Instance created but SSH not working.**", 
+            color=0xff0000))
+        subprocess.run(["docker", "kill", container_id])
+        subprocess.run(["docker", "rm", container_id]) 'r') as f:
         for line in f:
             if line.startswith(userid) and container_name in line:
                 return line.split('|')[1]
@@ -446,50 +515,16 @@ def get_container_id_from_database(userid, container_name):
 def generate_random_port():
     return random.randint(1025, 65535)
 
-async def create_server_task(interaction):
-    await interaction.response.send_message(embed=discord.Embed(description="### Creating Instance, This takes a few seconds. Powered by [CrashOfGuys](<https://discord.com/invite/VWm8zUEQN8>)", color=0x00ff00))
-    userid = str(interaction.user.id)
-    if count_user_servers(userid) >= SERVER_LIMIT:
-        await interaction.followup.send(embed=discord.Embed(description="```Error: Instance Limit-reached```", color=0xff0000))
-        return
 
-    image = "ubuntu-22.04-with-tmate"
-
-    try:
-        container_id = subprocess.check_output([
-           "docker", "run", "-itd", "--privileged", "--hostname", "crashcloud", "--cap-add=ALL", image
-        ]).strip().decode('utf-8')
-    except subprocess.CalledProcessError as e:
-        await interaction.followup.send(embed=discord.Embed(description=f"### Error creating Docker container: {e}", color=0xff0000))
-        return
-
-    try:
-        exec_cmd = await asyncio.create_subprocess_exec("docker", "exec", container_id, "tmate", "-F",
-                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        await interaction.followup.send(embed=discord.Embed(description=f"### Error executing tmate in Docker container: {e}", color=0xff0000))
-        subprocess.run(["docker", "kill", container_id])
-        subprocess.run(["docker", "rm", container_id])
-        return
-
-    ssh_session_line = await capture_ssh_session_line(exec_cmd)
-    if ssh_session_line:
-        await interaction.user.send(embed=discord.Embed(description=f"### Successfully created Instance\nSSH Session Command: ```{ssh_session_line}```\nOS: Ubuntu 22.04\nPassword: root", color=0x00ff00))
-        add_to_database(userid, container_id, ssh_session_line)
-        await interaction.followup.send(embed=discord.Embed(description="### Instance created successfully. Check your DMs for details.", color=0x00ff00))
-    else:
-        await interaction.followup.send(embed=discord.Embed(description="### Something went wrong or the Instance is taking longer than expected. If this problem continues, Contact Support.", color=0xff0000))
-        subprocess.run(["docker", "kill", container_id])
-        subprocess.run(["docker", "rm", container_id])
-
-@bot.tree.command(name="deploy", description="Creates a new Instance with Ubuntu 22.04")
-async def deploy_ubuntu(interaction: discord.Interaction):
-    await create_server_task(interaction)
-
-#@bot.tree.command(name="deploy-debian", description="Creates a new Instance with Debian 12")
-#async def deploy_ubuntu(interaction: discord.Interaction):
-#    await create_server_task_debian(interaction)
-
+@bot.tree.command(name="deploy", description="Creates a new Instance with Ubuntu and custom RAM/CPU/Password")
+@app_commands.describe(
+    ram="RAM size (e.g., 2g, 4g, 8g, 10g)", 
+    cpu="CPU cores (e.g., 1, 2, 4, 8)", 
+    ubuntu_version="Ubuntu version (e.g., 22.04, 20.04, 18.04)",
+    password="Set a custom root password"
+)
+async def deploy_ubuntu(interaction: discord.Interaction, ram: str = "2g", cpu: int = 2, ubuntu_version: str = "22.04", password: str = "root"):
+    await create_server_task(interaction, ram, cpu, ubuntu_version, password)
 @bot.tree.command(name="regen-ssh", description="Generates a new SSH session for your instance")
 @app_commands.describe(container_name="The name/ssh-command of your Instance")
 async def regen_ssh(interaction: discord.Interaction, container_name: str):
